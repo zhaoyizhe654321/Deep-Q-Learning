@@ -1,0 +1,93 @@
+BATCH_SIZE = 32
+LR = 0.01                   # learning rate
+EPSILON = 0.9               # 最优选择动作百分比
+GAMMA = 0.9                 # 奖励递减参数
+TARGET_REPLACE_ITER = 100   # Q 现实网络的更新频率
+MEMORY_CAPACITY = 5000      # 记忆库大小
+
+N_ACTIONS_SINGLE=4;
+N_STATES = 3
+time_step=8
+
+
+class DQN(object):
+    def __init__(self,user_num):
+        self.n_actions = N_ACTIONS_SINGLE
+        self.n_features = N_STATES*user_num
+        
+        self.lr = LR
+        self.gamma = GAMMA
+        self.epsilon = EPSILON
+        self.replace_target_iter = TARGET_REPLACE_ITER
+        self.memory_size = MEMORY_CAPACITY
+        self.batch_size = BATCH_SIZE
+        self.learn_step_counter = 0
+        self.memory = np.zeros((self.memory_size, self.n_features * 2 + 2))
+        self.memory_label=0;
+        self.memory_counter=0
+        self._build_net()
+    def _build_net(self):
+        eval_inputs = keras.layers.Input(shape=(self.n_features,))
+        x=  keras.layers.Dense(self.n_features, activation='relu')(eval_inputs)
+        x = keras.layers.Dense(self.n_features, activation='relu')(x)
+        x = keras.layers.Dense(self.n_features, activation='relu')(x)
+        self.q_eval = keras.layers.Dense(self.n_actions)(x)
+        # 构建target网络，注意这个target层输出是q_next而不是，算法中的q_target
+        target_inputs = keras.layers.Input(shape=(self.n_features,))
+        x = keras.layers.Dense(self.n_features, activation='relu')(target_inputs)
+        x = keras.layers.Dense(self.n_features, activation='relu')(x)
+        x = keras.layers.Dense(self.n_features, activation='relu')(x)
+        self.q_next = keras.layers.Dense(self.n_actions)(x)
+
+        self.model1 = keras.Model(target_inputs, self.q_next)
+        self.model2 = keras.Model(eval_inputs, self.q_eval)
+        adam = keras.optimizers.Adam(lr=self.lr)
+        self.model1.compile(loss='mean_squared_error', optimizer=adam, metrics=['accuracy'])
+        self.model2.compile(loss='mean_squared_error', optimizer=adam, metrics=['accuracy'])
+
+    def target_replace_op(self):
+        v1 = self.model2.get_weights()
+        self.model1.set_weights(v1)
+    def store_transition(self,state,action,reward,next_state):
+        if self.memory_label>=self.memory_size:
+            self.memory_label-=self.memory_size
+        transition=state+[action,reward]+next_state
+        self.memory[self.memory_label,:]=np.array(transition)
+        self.memory_label+=1
+        self.memory_counter+=1
+
+    def choose_action(self, observation):
+        observation = np.array(observation)
+        state = observation[np.newaxis, :]
+
+        if np.random.uniform() < self.epsilon:
+            actions_value = self.model1.predict(state)
+
+            action = np.argmax(actions_value[0])
+        else:
+            action = np.random.randint(0, self.n_actions-1)
+        return action
+
+    def learn(self):
+        if self.learn_step_counter % self.replace_target_iter == 0:
+            self.target_replace_op()
+
+        if self.memory_counter > self.memory_size:
+            sample_index = np.random.choice(self.memory_size, size=self.batch_size)
+
+        else:
+            sample_index = np.random.choice(self.memory_counter, size=self.batch_size)
+
+        batch_memory=self.memory[sample_index,:]
+
+
+        q_next, q_eval = self.model1.predict(batch_memory[:,-self.n_features:]), self.model2.predict(
+            batch_memory[:,:self.n_features])
+        q_target = q_eval.copy()
+
+        batch_index = np.arange(self.batch_size, dtype=np.int32)
+        eval_act_index = batch_memory[:, self.n_features].astype(int)
+        reward = batch_memory[:,self.n_features + 1]
+        q_target[batch_index, eval_act_index] = reward + self.gamma * np.max(q_next, axis=1)
+        self.model2.fit(batch_memory[:,:self.n_features], q_target, epochs=10,verbose=0)
+        self.learn_step_counter += 1
